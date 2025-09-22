@@ -150,6 +150,11 @@ def run_lda(cleaned_df, num_topics=5, passes=2, num_words=10):
     try:
         lda_results = perform_lda(cleaned_df, num_topics, passes, num_words)
         lda_time = time.time() - start_time
+        instruction = (
+            "\n\n---\n"
+            "**Tip:** For a more human-like interpretation, copy the topics below and paste them into ChatGPT or another AI assistant. Describe your product if necessary.\n "
+            "Prompt with:\n 'Interpret these LDA topics in plain English. What themes do they represent?'\n"
+        )
         summary = f"✅ LDA done in {lda_time:.2f}s! Results below."
         return summary, lda_results
     except Exception as e:
