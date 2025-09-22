@@ -1,0 +1,5 @@
+pandas>=1.5.0
+gradio>=3.40
+gensim>=4.3.0
+spacy>=3.6.0
+nltk>=3.8.0
