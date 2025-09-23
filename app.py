@@ -17,19 +17,33 @@ except OSError:
 
 nltk.download('stopwords')  # Ensure stopwords are downloaded
 
-# Function to load data from uploaded file (supports CSV, JSON, JSONL)
+# Function to load data from uploaded file (supports CSV, JSON, JSONL) with encoding fallback
 def load_data(file_obj):
     if file_obj is None:
         return None
     ext = file_obj.name.split('.')[-1].lower()
-    if ext == 'jsonl':
-        return pd.read_json(file_obj, lines=True)
-    elif ext == 'json':
-        return pd.read_json(file_obj)
-    elif ext == 'csv':
-        return pd.read_csv(file_obj)
-    else:
-        raise ValueError(f"Unsupported file type: {ext}. Please upload CSV, JSON, or JSONL files.")
+    
+    # Try UTF-8 first, fallback to latin1
+    encoding = 'utf-8'
+    
+    try:
+        if ext == 'jsonl':
+            return pd.read_json(file_obj, lines=True, encoding=encoding)
+        elif ext == 'json':
+            return pd.read_json(file_obj, encoding=encoding)
+        elif ext == 'csv':
+            return pd.read_csv(file_obj, encoding=encoding)
+        else:
+            raise ValueError(f"Unsupported file type: {ext}. Please upload CSV, JSON, or JSONL files.")
+    except UnicodeDecodeError:
+        # Fallback encoding
+        encoding = 'latin1'
+        if ext == 'jsonl':
+            return pd.read_json(file_obj, lines=True, encoding=encoding)
+        elif ext == 'json':
+            return pd.read_json(file_obj, encoding=encoding)
+        elif ext == 'csv':
+            return pd.read_csv(file_obj, encoding=encoding)
 
 # Function to clean and filter data (adapted for review-only focus)
 def clean_and_filter_data(df):
@@ -37,30 +51,21 @@ def clean_and_filter_data(df):
     df.columns = df.columns.str.lower()
     df = df.loc[:, ~df.columns.duplicated()]  # Remove duplicate columns
 
-    # Map columns to required names
-    standardized_cols = {}
-    required_substrings = {
-        'rating': 'rating',
-        'text': ['text', 'review'],
-        'verified_purchase': ['verified', 'purchase'],
-        'helpful_vote': ['helpful', 'vote'],
-    }
 
-    for col in df.columns:
-        for key, substr in required_substrings.items():
-            if isinstance(substr, list):
-                if all(s in col for s in substr):
-                    standardized_cols[key] = col
-                    break
-            elif substr in col:
-                standardized_cols[key] = col
-                break
-
-    df = df.rename(columns={v: k for k, v in standardized_cols.items()})
-
-    # Keep only required columns
-    cols_to_keep = ['text', 'rating', 'verified_purchase', 'helpful_vote']
+    # Keep only required and available optional columns
+    required_cols = ['text', 'rating']
+    optional_cols = ['verified_purchase', 'helpful_vote']
+    cols_to_keep = required_cols + [col for col in optional_cols if col in df.columns]
     df = df[[col for col in cols_to_keep if col in df.columns]]
+
+    # Drop rows with empty 'text'
+    if 'text' in df.columns:
+        df = df[df['text'].astype(str).str.strip().astype(bool)]
+    
+    # Ensure 'rating' is numeric and between 1-2 if column exists
+    if 'rating' in df.columns:
+        df['rating'] = pd.to_numeric(df['rating'], errors='coerce')
+        df = df[df['rating'].between(1, 2)]
 
     # Filter verified purchases if column exists
     if 'verified_purchase' in df.columns:
@@ -70,6 +75,7 @@ def clean_and_filter_data(df):
     if 'text' in df.columns:
         df['word_count'] = df['text'].astype(str).str.split().str.len()
         df = df[df['word_count'] >= 5]
+        df = df.drop(columns=['word_count'])
 
     # Remove duplicates
     df = df.drop_duplicates()
@@ -150,39 +156,38 @@ def run_lda(cleaned_df, num_topics=5, passes=2, num_words=10):
     try:
         lda_results = perform_lda(cleaned_df, num_topics, passes, num_words)
         lda_time = time.time() - start_time
-        instruction = (
+        summary = (
+            f"✅ LDA done in {lda_time:.2f}s! Results below."
             "\n\n---\n"
-            "**Tip:** For a more human-like interpretation, copy the topics below and paste them into ChatGPT or another AI assistant. Describe your product if necessary.\n "
+            "**Tip:** For a more human-like interpretation, copy the topics below and paste them into ChatGPT or another AI assistant. Describe your product if necessary.\n"
             "Prompt with:\n 'Interpret these LDA topics in plain English. What themes do they represent?'\n"
         )
-        summary = f"✅ LDA done in {lda_time:.2f}s! Results below."
-        return summary, lda_results
+        
+        return summary + lda_results if isinstance(lda_results, str) else "No topics generated."
     except Exception as e:
         lda_time = time.time() - start_time
         return f"❌ Error in LDA: {str(e)}\nTime: {lda_time:.2f}s", ""
 
 # Gradio Demo with Separate Buttons for Step-by-Step Processing
 with gr.Blocks() as demo:
-    gr.Markdown("# Step-by-Step Review LDA Analyzer (with Timing)")
+    gr.Markdown("# Review Analysis")
     gr.Markdown(
         "Upload your reviews file, then click buttons sequentially to isolate issues: Clean first, then Run LDA. "
-        "Timing is shown for each step to pinpoint slowdowns."
     )
     
     file_input = gr.File(label="Upload Reviews File", file_count="single")
-    max_rows_input = gr.Number(value=10, label="Max Rows to Show in Preview", minimum=1, maximum=100)
+    max_rows_input = gr.Number(value=10, label="Max Rows to Show in Preview", minimum=1, maximum=10)
     
     with gr.Row():
-        num_topics = gr.Number(value=3, label="Number of Topics", minimum=1, maximum=20)
-        passes = gr.Number(value=1, label="Passes (Iterations)", minimum=1, maximum=10)
-        num_words = gr.Number(value=10, label="Words per Topic", minimum=5, maximum=20)
+        num_topics = gr.Number(value=3, label="Number of Topics", minimum=1, maximum=5)
+        passes = gr.Number(value=1, label="Passes (Iterations)", minimum=1, maximum=3)
+        num_words = gr.Number(value=10, label="Words per Topic", minimum=5, maximum=10)
     
     clean_button = gr.Button("Step 1: Clean and Filter Data")
     summary_clean_output = gr.Textbox(label="Step 1 Summary & Timing", lines=5, interactive=False)
     dataframe_output = gr.Dataframe(label="Step 1: Cleaned Data Preview", interactive=False)
     
     lda_button = gr.Button("Step 2: Run LDA")
-    summary_lda_output = gr.Textbox(label="Step 2 Summary & Timing", lines=2, interactive=False)
     lda_output = gr.Textbox(label="Step 2: LDA Topics", lines=20, interactive=False)
     
     # State to hold cleaned DataFrame between steps
@@ -197,8 +202,8 @@ with gr.Blocks() as demo:
     lda_button.click(
         fn=run_lda,
         inputs=[cleaned_state, num_topics, passes, num_words],
-        outputs=[summary_lda_output, lda_output]
+        outputs=[lda_output]
     )
 
 if __name__ == "__main__":
-    demo.launch()
+    demo.launch(share=True)
